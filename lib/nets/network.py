@@ -12,6 +12,11 @@ import tensorflow.contrib.slim as slim
 from tensorflow.contrib.slim import losses
 from tensorflow.contrib.slim import arg_scope
 
+import PIL.Image as Image
+import PIL.ImageColor as ImageColor
+import PIL.ImageDraw as ImageDraw
+import PIL.ImageFont as ImageFont
+
 import numpy as np
 
 from layer_utils.snippets import generate_anchors_pre, generate_anchors_pre_tf
@@ -230,6 +235,28 @@ class Network(object):
       self._anchors = anchors
       self._anchor_length = anchor_length
 
+  def _cut_image(self,image,rois):
+      image = image.copy()
+      num_boxes = rois.shape[0]
+      boxes_new = rois[1:].copy()
+      disp_image = Image.fromarray(np.uint8(image[0]))
+
+      for i in range(num_boxes):
+        disp_image = self._draw_single_box(disp_image, 
+                                  boxes_new[i, 0],
+                                  boxes_new[i, 1],
+                                  boxes_new[i, 2],
+                                  boxes_new[i, 3])
+                                  
+      image[0, :] = np.array(disp_image)
+      return image
+  def _draw_single_box(self, image, xmin, ymin, xmax, ymax, color='black', thickness=4):
+    draw = ImageDraw.Draw(image)
+    (left, right, top, bottom) = (xmin, xmax, ymin, ymax)
+    draw.line([(left, top), (left, bottom), (right, bottom),
+              (right, top), (left, top)], width=thickness, fill=color)
+    return image
+
   def _build_network(self, is_training=True):
     # select initializers
     if cfg.TRAIN.TRUNCATED:
@@ -341,6 +368,16 @@ class Network(object):
       # Try to have a deterministic order for the computing graph, for reproducibility
       with tf.control_dependencies([rpn_labels]):
         rois, _ = self._proposal_target_layer(rois, roi_scores, "rpn_rois")
+      # tensorboard to show rpn box
+      print(rois.shape)
+      rpn_roi_bbox = rois[:cfg.TRAIN.BATCH_SIZE*cfg.TRAIN.FG_FRACTION].copy()
+
+      rpn_im = self._image + cfg.PIXEL_MEANS
+      image_train = tf.py_func(self._cut_image, 
+                      [rpn_im , rpn_roi_bbox ],
+                      tf.float32, name="rpn_boxes1")
+      tf.summary.image("RPN_Box",image_train)
+      
     else:
       if cfg.TEST.MODE == 'nms':
         rois, _ = self._proposal_layer(rpn_cls_prob, rpn_bbox_pred, "rois")
@@ -413,7 +450,7 @@ class Network(object):
       biases_regularizer = tf.no_regularizer
 
     # list as many types of layers as possible, even if they are not used now
-    with arg_scope([slim.conv2d, slim.conv2d_in_plane, \
+    with arg_scope([slim.conv2d, slim.conv2d_in_plane, 
                     slim.conv2d_transpose, slim.separable_conv2d, slim.fully_connected], 
                     weights_regularizer=weights_regularizer,
                     biases_regularizer=biases_regularizer, 
